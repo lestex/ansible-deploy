@@ -1,0 +1,42 @@
+---
+- hosts: 'all'
+  remote_user: 'deploy'
+  become: yes
+
+  # DEBIAN jessie distro
+  vars:
+    # Пользователь, от лица которого будет происходит деплой
+
+    # Директория установки Rbenv    
+    app_name: 'mobydock'
+    # Путь до нашего приложения
+
+  # Список задач, которые будут выполнены последовательно
+  tasks:
+    - name: 'database | create DB'
+      shell: docker exec -it postgres createdb -U postgres {{ db_name }}
+      ignore_errors: yes
+
+    - name: 'database | create USER'
+      shell: docker exec -it postgres psql -U postgres -c "CREATE USER {{ app_name }} WITH PASSWORD '{{ db_name }}'"
+      ignore_errors: yes
+
+    # db migrate and db seed
+    # docker exec -it {{ app_name }} rake db:migrate
+    # docker exec -it {{ app_name }} rake db:seed
+    
+
+    # enable services
+    - name: 'systemd | enable services'
+      service: 'name={{ item }} enabled=yes'
+      with_items:
+        - '{{ app_name}}.service'
+        - 'nginx.service'
+        
+    # start services on which other services depend on
+    - name: 'systemd | start services'
+      service: 'name={{ item }} state=started'
+      with_items:       
+        - '{{ app_name}}.service'
+        - 'nginx.service'
+      

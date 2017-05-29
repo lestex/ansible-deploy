@@ -1,0 +1,32 @@
+# this play book configures deploy user and copies public keys
+# you can then run playbook.yml or wp-playbook.yml
+
+---
+- hosts: 'all'
+  remote_user: 'root'  
+
+  vars:    
+    user: 'deploy'
+    home: '/home/{{ user }}'
+  
+  tasks:
+    - name: 'apt | update'
+      action: 'apt update_cache=yes'
+
+    - name: 'apt | install dependencies'
+      action: 'apt pkg={{ item }}'      
+      with_items:
+        - 'software-properties-common'
+        - 'python-software-properties'
+
+    - name: 'sudoers | copy sudoers'
+      template: 'src=configs/sudoers dest=/etc/sudoers owner=root group=root mode=0440'    
+
+    - name: 'account | create'
+      user: 'name={{ user }} shell=/bin/bash groups=sudo'
+
+    - name: 'nginx | creates cache directory'
+      file: path={{ home }}/.ssh state=directory owner={{ user }} group={{ user }} mode=0700
+
+    - name: 'account | copy authorized keys'
+      shell: 'mkdir -p {{ home }}/.ssh -m 700 && cp /root/.ssh/authorized_keys {{ home }}/.ssh && chown -R {{ user }}:{{ user }} {{ home }}/.ssh'
