@@ -1,0 +1,149 @@
+---
+- hosts: 'all'
+  remote_user: 'deploy'
+  become: yes
+
+  # DEBIAN jessie distro
+  vars:
+    # Пользователь, от лица которого будет происходит деплой
+    user: 'deploy'
+    # Домашняя директория
+    home: '/home/{{ user }}'
+    # Директория установки Rbenv    
+    app_name: 'mobydock'
+    # Путь до нашего приложения
+    app_dir: '{{ home }}/config/'
+    # docker-engine version
+    docker_v: '1.10.3'
+    # env
+    app_env: 'production' # staging
+    # DB name and passwd
+    db_name: '{{ app_name }}_{{ app_env }}'
+    db_passwd: '{{ app_name }}'
+
+  # Список задач, которые будут выполнены последовательно
+  tasks:
+    # Add repo for up-to-date docker-engine
+    - name: 'apt | add docker repo to APT'
+      shell: sh -c 'echo "deb https://apt.dockerproject.org/repo debian-`lsb_release -cs` main" >> /etc/apt/sources.list.d/docker.list'
+
+    - name: 'apt | install docker key'
+      shell: apt-key adv --keyserver hkp://p80.pool.sks-keyservers.net:80 --recv-keys 58118E89F3A912897C070ADBF76221572C52609D
+
+    # Обновление кеша и установка необходимых пакетов, всего программного обеспечения,
+    # необходимого для работы нашего сервера
+    - name: 'apt | update'
+      action: 'apt update_cache=yes'
+
+    - name: 'apt | install dependencies'
+      action: 'apt pkg={{ item }}'
+      # with_items - это обычный цикл в Ansible, он возьмёт и прогонит все его элементы через action
+      with_items:
+        - 'docker-engine={{ docker_v }}-0~jessie'
+        - 'git'
+
+    # add deploy user to docker group    
+    - name: 'account | create'      
+      user: name={{ user }} groups=docker append=yes
+
+    - name: 'docker | pull images'
+      shell: docker pull {{ item }}
+      with_items:
+        - 'postgres:9.4.5'
+        - 'redis:2.8.22'
+
+    - name: 'configs | copy '
+      template: 'src=configs/sudoers dest=/etc/sudoers owner=root group=root mode=0440'
+
+    - name: 'account | copy ssh private key'
+      copy: 'src=configs/keys/id_rsa dest={{ home }}/.ssh/id_rsa owner={{ user }} group={{ user }} mode=0600'
+
+    - name: 'file | remove app directories'
+      file: 'path={{ item }} state=absent'
+      with_items:
+        - '/var/git/{{ app_name }}.git'
+        - '/var/git/{{ app_name }}'
+        - '/var/git/nginx.git'
+        - '/var/git/nginx'
+
+    - name: 'file | create app directories'
+      file: 'path={{ item }} state=directory owner={{ user }} group={{ user }}'
+      with_items:
+        - '/var/git/{{ app_name }}.git'
+        - '/var/git/{{ app_name }}'
+        - '/var/git/nginx.git'
+        - '/var/git/nginx'
+
+    - name: 'git | init bare repos'
+      shell: git --git-dir={{ item }} --bare init
+      with_items:
+        - '/var/git/{{ app_name }}.git'
+        - '/var/git/nginx.git'
+
+    - name: 'file | move post-receive nginx hook'
+      copy: 'src=configs/git/post-receive/nginx dest=/var/git/nginx.git/hooks/post-receive owner={{ user }} group={{ user }}'
+
+    - name: 'file | move post-receive app hook'
+      copy: 'src=configs/git/post-receive/{{ app_name }} dest=/var/git/{{ app_name }}.git/hooks/post-receive owner={{ user }} group={{ user }}'
+
+    - name: 'file | change ownership'
+      file: 'path={{ item }} owner={{ user }} group={{ user }} recurse=yes'
+      with_items:
+        - '/var/git/{{ app_name }}.git'
+        - '/var/git/{{ app_name }}'
+        - '/var/git/nginx.git'
+        - '/var/git/nginx'
+
+    - name: 'file | set executable'
+      file: 'path={{ item }} mode="0755"'
+      with_items:
+        - '/var/git/{{ app_name }}.git/hooks/post-receive'
+        - '/var/git/nginx.git/hooks/post-receive'
+
+    # copy unit files
+    - name: 'file | copy units'
+      copy: 'src={{ item }} dest=/etc/systemd/system owner={{ user }} group={{ user }}'
+      with_items:
+        - 'configs/units/{{ app_name}}.service'
+        - 'configs/units/nginx.service'
+        - 'configs/units/postgres.service'
+        - 'configs/units/redis.service'
+        - 'configs/units/swap.service'
+
+    # enable services
+    - name: 'systemd | enable services'
+      service: 'name={{ item }} enabled=yes'
+      with_items:
+        - 'postgres.service'
+        - 'redis.service'
+        - 'swap.service'
+
+    # start services on which other services depend on
+    - name: 'systemd | start services'
+      service: 'name={{ item }} state=started'
+      with_items:       
+        - 'postgres.service'
+        - 'redis.service'
+        - 'swap.service'
+
+    # create app directory
+    - name: 'file | create app directory'
+      file: 'path={{ app_dir }} state=directory owner={{ user }} group={{ user }}'      
+
+    # copy environment files
+    - name: 'file | copy environment files'
+      copy: 'src=configs/env/{{ app_name}}.env.{{ app_env }} dest={{ app_dir }}/.{{ app_name }}.env owner={{ user }} group={{ user }}'
+  
+    # copy certificates
+    - name: 'file | copy certificates'
+      copy: 'src=certs/productionexample.crt dest=/etc/ssl/certs/ owner=root group=root'
+
+
+    - name: 'file | copy certificates'
+      copy: 'src={{ item }} dest=/etc/ssl/private/ owner=root group=root'
+      with_items:
+        - 'certs/productionexample.key'
+        - 'certs/dhparam.pem'
+
+
+      

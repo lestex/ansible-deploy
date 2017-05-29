@@ -1,0 +1,150 @@
+---
+- hosts: 'all'
+  remote_user: 'deploy'
+  become: yes
+
+  # В данном блоке объявляются переменные, которые будут использоваться в playbook и конфигах, представленных выше
+  vars:    
+    # Пользователь, от лица которого будет происходит деплой
+    user: 'deploy'
+    # Домашняя директория
+    home: '/home/{{ user }}'
+    # application name
+    name : 'twintaps' # enter the name of app    
+    # password    
+    mysql_root_pass: 'superstrongpassword'
+    # database name
+    database: '{{ name }}'
+    # database user
+    database_user: '{{ name }}'
+    # database user
+    database_password: 'superstrongpassword'
+    # server name for nginx.conf
+    server_name: '{{ name }}.com'
+
+  # Список задач, которые будут выполнены последовательно
+  tasks:
+    # Add repo for up-to-date NIGNX
+    - name: 'apt | add nginx repo to APT'
+      shell: add-apt-repository ppa:nginx/stable -y
+    
+    - name: 'apt | update'
+      action: 'apt update_cache=yes'
+
+    - name: 'apt | install dependencies'
+      action: 'apt pkg={{ item }}'      
+      with_items:      
+        - 'build-essential'        
+        - 'git'
+        - 'nginx'        
+        - 'nodejs'
+        - 'htop'
+        - 'mysql-server'
+        - 'mysql-client'
+        - 'php5-mysql'
+        - 'php5-fpm'
+        - 'php5-gd'
+        - 'php5-cli'
+        - 'python-mysqldb'
+
+    # NGINX SETTINGS
+    - name: 'nginx | remove default site'
+      file: 'path=/etc/nginx/sites-enabled/default state=absent'
+    
+    - name: 'nginx | copy nginx.conf'
+      template: 'src=configs/wordpress/nginx.conf dest=/etc/nginx/nginx.conf owner=root group=root mode=0644'
+
+    - name: 'nginx | create config directory'
+      file: path={{ home }}/config state=directory
+
+    - name: 'nginx | copy default config'
+      template: 'src=configs/wordpress/default dest={{ home }}/config/{{ name }}.conf owner={{ user }} group={{ user }} mode=0644'      
+    
+    - name: 'nginx | create symlink for nginx config'
+      file: 'src={{ home }}/config/{{ name }}.conf dest=/etc/nginx/sites-enabled/{{ name }} state=link'
+
+    - name: 'nginx | creates cache directory'
+      file: path=/usr/share/nginx/cache state=directory      
+
+    - name: 'nginx | restart service'      
+      service: name=nginx state=restarted      
+
+    # MYSQL SETTINGS    
+
+    - name: 'mysql | update MySQL root password'
+      mysql_user: name=root host={{ item }} password={{ mysql_root_pass }} state=present
+      with_items:
+        - "{{ ansible_hostname }}"
+        - 127.0.0.1
+        - ::1
+        - localhost
+      ignore_errors: yes
+
+    - name: 'mysql | copy the root credentials as .my.cnf file'
+      template: src=configs/mysql/my.cnf dest=~/.my.cnf mode=0600
+
+    - name: 'mysql | ensure Anonymous user(s) are not in the database'
+      mysql_user: name='' host={{ item }} state=absent
+      with_items:
+        - localhost
+        - "{{ ansible_hostname }}"
+      ignore_errors: yes
+
+    - name: 'mysql | remove the test database'
+      mysql_db: name=test state=absent
+      ignore_errors: yes
+    
+    # create database
+    - name: 'mysql | remove the test database'
+      mysql_db: name={{ database }} state=present
+      ignore_errors: yes
+
+    # grant privileges to user on mysql_db
+    - name: 'mysql | create user'
+      mysql_user: name={{ database_user }} password={{ database_password }} priv={{ database }}.*:ALL state=present
+      ignore_errors: yes
+
+    - name: 'mysql | remove .my.cnf file'
+      file: path=/root/.my.cnf state=absent      
+
+    - name: 'mysql | restart service'
+      service: name=mysql state=restarted
+
+    # PHP5-FPM SETTINGS
+    - name: 'php-fpm | configure settings in php.ini'
+      replace: dest=/etc/php5/fpm/php.ini regexp=';cgi.fix_pathinfo=1' replace='cgi.fix_pathinfo=0' backup=yes
+
+    - name: 'php-fpm | configure settings in pool.d/www.conf'
+      replace: 
+        dest: /etc/php5/fpm/pool.d/www.conf
+        backup: yes
+        regexp: "{{ item.regexp }}"
+        replace: "{{ item.replace }}"
+      with_items:
+        - { regexp: ';listen.owner = www-data', replace: 'listen.owner = www-data' }
+        - { regexp: ';listen.group = www-data', replace: 'listen.group = www-data' }
+        - { regexp: ';listen.mode = 0660', replace: 'listen.mode = 0660' }
+      
+    - name: 'php5-fpm | restart service'
+      service: name=php5-fpm state=restarted
+
+    # WORDPRESS
+    - name: 'wordpress | delete files'
+      shell: 'rm -rf /usr/share/nginx/html/*'      
+
+    - name: 'wordpress | unarchive'
+      unarchive: src=http://wordpress.org/latest.tar.gz dest=/usr/share/nginx/html/ copy=no
+    
+    - name: 'wordpress | move'
+      shell: 'mv -f /usr/share/nginx/html/wordpress/* /usr/share/nginx/html/'
+
+    - name: 'wordpress | chown to www-data'
+      shell: 'chown -R www-data:www-data /usr/share/nginx/html/'
+
+    - name: 'wordpress | directory remove'
+      file: 'path=/usr/share/nginx/html/wordpress state=absent'
+
+    - name: 'wordpress | directory remove'
+      file: 'path=/usr/share/nginx/html/index.html state=absent' 
+
+    
